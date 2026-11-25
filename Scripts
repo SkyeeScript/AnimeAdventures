@@ -1,0 +1,357 @@
+local Players = game:GetService("Players")
+local ContentProvider = game:GetService("ContentProvider")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+
+-- ================= SETTINGS =================
+local CONFIG = {
+	GameName = "Anime Adventures",
+	Version = "v1.0.0",
+	LogoText = "XT",            -- shown in the logo box
+	LogoImage = "",             -- optional: "rbxassetid://123456" replaces LogoText
+	Scale = 0.85,               -- size of the card (1 = full size)
+	StepTimes = { 5, 10, 15 },  -- seconds for step 1, 2 and 3
+	TotalTime = 120,            -- whole loading time (seconds); the last step uses the remaining time
+	StepNames = { "Character", "Assets", "Setup", "Start" },
+	Setup = function()          -- put your own startup code here (load data, build UI, etc.)
+	end,
+	OnReady = function()        -- runs after the loader fades out
+	end,
+}
+-- ============================================
+
+local BG = Color3.fromRGB(15, 16, 22)
+local PANEL = Color3.fromRGB(26, 27, 38)
+local GREEN = Color3.fromRGB(70, 205, 130)
+local GRAY = Color3.fromRGB(78, 82, 100)
+local TEXT = Color3.fromRGB(235, 238, 245)
+local DIM = Color3.fromRGB(130, 136, 155)
+
+local player = Players.LocalPlayer
+local pg = player:WaitForChild("PlayerGui")
+local old = pg:FindFirstChild("StepLoader")
+if old then old:Destroy() end
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "StepLoader"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.DisplayOrder = 500
+gui.Parent = pg
+
+-- ---------- helpers ----------
+local function corner(o, r)
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0, r)
+	c.Parent = o
+end
+
+local function stroke(o, col, th, tr)
+	local s = Instance.new("UIStroke")
+	s.Color = col
+	s.Thickness = th
+	s.Transparency = tr or 0
+	s.Parent = o
+	return s
+end
+
+local function text(parent, txt, size, pos, w, color, font, align)
+	local l = Instance.new("TextLabel")
+	l.BackgroundTransparency = 1
+	l.Size = UDim2.fromOffset(w, size + 6)
+	l.Position = pos
+	l.Text = txt
+	l.TextSize = size
+	l.TextColor3 = color or TEXT
+	l.Font = font or Enum.Font.Gotham
+	l.TextXAlignment = align or Enum.TextXAlignment.Left
+	l.Parent = parent
+	return l
+end
+
+-- ---------- card ----------
+local dim = Instance.new("Frame")
+dim.Size = UDim2.fromScale(1, 1)
+dim.BackgroundColor3 = Color3.new(0, 0, 0)
+dim.BackgroundTransparency = 1
+dim.BorderSizePixel = 0
+dim.Active = true
+dim.Parent = gui
+
+local card = Instance.new("CanvasGroup")
+card.AnchorPoint = Vector2.new(0.5, 0.5)
+card.Position = UDim2.fromScale(0.5, 0.5)
+card.Size = UDim2.fromOffset(460, 420)
+card.BackgroundColor3 = BG
+card.GroupTransparency = 1
+card.Parent = gui
+corner(card, 16)
+stroke(card, Color3.fromRGB(45, 48, 62), 1.5)
+
+local cardScale = Instance.new("UIScale")
+cardScale.Scale = CONFIG.Scale * 0.9
+cardScale.Parent = card
+
+-- Header
+if CONFIG.LogoImage ~= "" then
+	local img = Instance.new("ImageLabel")
+	img.BackgroundTransparency = 1
+	img.Size = UDim2.fromOffset(52, 36)
+	img.Position = UDim2.fromOffset(20, 16)
+	img.Image = CONFIG.LogoImage
+	img.Parent = card
+else
+	text(card, CONFIG.LogoText, 28, UDim2.fromOffset(20, 14), 56, TEXT, Enum.Font.GothamBlack, Enum.TextXAlignment.Center)
+end
+text(card, CONFIG.GameName, 17, UDim2.fromOffset(88, 14), 260, TEXT, Enum.Font.GothamBold)
+text(card, "Loader " .. CONFIG.Version, 12, UDim2.fromOffset(88, 38), 260, DIM)
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.fromOffset(30, 30)
+closeBtn.Position = UDim2.fromOffset(416, 18)
+closeBtn.BackgroundTransparency = 1
+closeBtn.Text = "✕"
+closeBtn.TextColor3 = DIM
+closeBtn.TextSize = 18
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.Parent = card
+closeBtn.MouseButton1Click:Connect(function() gui:Destroy() end)
+
+local divider = Instance.new("Frame")
+divider.Size = UDim2.new(1, 0, 0, 2)
+divider.Position = UDim2.fromOffset(0, 70)
+divider.BorderSizePixel = 0
+divider.BackgroundColor3 = Color3.new(1, 1, 1)
+divider.Parent = card
+local dg = Instance.new("UIGradient")
+dg.Color = ColorSequence.new(Color3.fromRGB(110, 70, 220), Color3.fromRGB(230, 80, 150))
+dg.Transparency = NumberSequence.new({
+	NumberSequenceKeypoint.new(0, 1),
+	NumberSequenceKeypoint.new(0.5, 0.4),
+	NumberSequenceKeypoint.new(1, 1),
+})
+dg.Parent = divider
+
+-- Title + status
+text(card, "Opening " .. CONFIG.GameName, 18, UDim2.fromOffset(20, 86), 420, TEXT, Enum.Font.GothamBold)
+local statusLbl = text(card, "Getting things ready...", 13, UDim2.fromOffset(20, 114), 420, GREEN, Enum.Font.GothamMedium)
+
+-- ---------- step tracker ----------
+local N = #CONFIG.StepNames
+local LEFT, RIGHT, CY = 34, 426, 164
+local gap = (RIGHT - LEFT) / (N - 1)
+local circles, checks, lineFills, popScales = {}, {}, {}, {}
+
+for i = 1, N - 1 do
+	local x1 = LEFT + (i - 1) * gap + 20
+	local x2 = LEFT + i * gap - 20
+	local line = Instance.new("Frame")
+	line.Size = UDim2.fromOffset(x2 - x1, 2)
+	line.Position = UDim2.fromOffset(x1, CY - 1)
+	line.BackgroundColor3 = GRAY
+	line.BorderSizePixel = 0
+	line.Parent = card
+	local fillF = Instance.new("Frame")
+	fillF.Size = UDim2.fromScale(0, 1)
+	fillF.BackgroundColor3 = GREEN
+	fillF.BorderSizePixel = 0
+	fillF.Parent = line
+	lineFills[i] = fillF
+end
+
+for i = 1, N do
+	local cx = LEFT + (i - 1) * gap
+	local c = Instance.new("Frame")
+	c.Size = UDim2.fromOffset(30, 30)
+	c.Position = UDim2.fromOffset(cx - 15, CY - 15)
+	c.BackgroundColor3 = BG
+	c.Parent = card
+	corner(c, 15)
+	local s = stroke(c, GRAY, 2)
+	circles[i] = { frame = c, stroke = s }
+
+	local sc = Instance.new("UIScale")
+	sc.Parent = c
+	popScales[i] = sc
+
+	local chk = Instance.new("TextLabel")
+	chk.Size = UDim2.fromScale(1, 1)
+	chk.BackgroundTransparency = 1
+	chk.Text = "✓"
+	chk.TextColor3 = GREEN
+	chk.TextSize = 18
+	chk.Font = Enum.Font.GothamBold
+	chk.TextTransparency = 1
+	chk.Parent = c
+	checks[i] = chk
+
+	text(card, CONFIG.StepNames[i], 12, UDim2.fromOffset(cx - 50, CY + 22), 100, DIM, Enum.Font.Gotham, Enum.TextXAlignment.Center)
+end
+
+-- ---------- activity panel ----------
+local panel = Instance.new("Frame")
+panel.Size = UDim2.fromOffset(420, 190)
+panel.Position = UDim2.fromOffset(20, 214)
+panel.BackgroundColor3 = PANEL
+panel.BorderSizePixel = 0
+panel.Parent = card
+corner(panel, 12)
+text(panel, "ACTIVITY", 11, UDim2.fromOffset(16, 10), 200, DIM, Enum.Font.GothamMedium)
+
+local rows = Instance.new("Frame")
+rows.Size = UDim2.new(1, 0, 0, 150)
+rows.Position = UDim2.fromOffset(0, 32)
+rows.BackgroundTransparency = 1
+rows.Parent = panel
+local layout = Instance.new("UIListLayout")
+layout.Padding = UDim.new(0, 2)
+layout.Parent = rows
+
+local spinners = {}
+
+local function addRow(msg, kind)
+	local row = Instance.new("Frame")
+	row.Size = UDim2.new(1, 0, 0, 24)
+	row.BackgroundTransparency = 1
+	row.Parent = rows
+
+	local ic = text(row, kind == "info" and "ⓘ" or "↻", 15, UDim2.fromOffset(16, 0), 22, kind == "info" and DIM or GREEN, Enum.Font.GothamBold, Enum.TextXAlignment.Center)
+	local tx = text(row, msg, 13, UDim2.fromOffset(46, 0), 290, Color3.fromRGB(200, 204, 218))
+	local tm = text(row, "", 12, UDim2.fromOffset(334, 1), 70, DIM, Enum.Font.Gotham, Enum.TextXAlignment.Right)
+
+	for _, o in ipairs({ ic, tx }) do
+		local target = o.TextTransparency
+		o.TextTransparency = 1
+		TweenService:Create(o, TweenInfo.new(0.3), { TextTransparency = target }):Play()
+	end
+
+	if kind == "task" then table.insert(spinners, ic) end
+
+	return {
+		done = function(stamp, green)
+			local i = table.find(spinners, ic)
+			if i then table.remove(spinners, i) end
+			ic.Rotation = 0
+			ic.Text = "✓"
+			ic.TextColor3 = GREEN
+			if green then tx.TextColor3 = GREEN end
+			tm.Text = stamp
+		end,
+		stamp = function(stamp) tm.Text = stamp end,
+	}
+end
+
+-- ---------- animation loop (spinners + active step pulse) ----------
+local activeStep = nil
+local conn
+conn = RunService.Heartbeat:Connect(function()
+	if not gui.Parent then conn:Disconnect() return end
+	local t = os.clock()
+	for _, sp in ipairs(spinners) do
+		sp.Rotation = (t * 360) % 360
+	end
+	if activeStep then
+		popScales[activeStep].Scale = 1 + 0.08 * math.sin(t * 6)
+	end
+end)
+
+local function setActive(i)
+	activeStep = i
+	circles[i].stroke.Color = GREEN
+end
+
+local function setDone(i)
+	if activeStep == i then activeStep = nil end
+	local c = circles[i]
+	popScales[i].Scale = 1
+	c.stroke.Color = GREEN
+	TweenService:Create(c.frame, TweenInfo.new(0.25), { BackgroundColor3 = Color3.fromRGB(24, 52, 42) }):Play()
+	checks[i].TextTransparency = 0
+	local pop = Instance.new("UIScale")
+	pop.Scale = 0.3
+	pop.Parent = checks[i]
+	TweenService:Create(pop, TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1 }):Play()
+	if lineFills[i] then
+		TweenService:Create(lineFills[i], TweenInfo.new(0.5, Enum.EasingStyle.Quad), { Size = UDim2.fromScale(1, 1) }):Play()
+	end
+end
+
+-- ---------- entrance ----------
+TweenService:Create(dim, TweenInfo.new(0.4), { BackgroundTransparency = 0.45 }):Play()
+TweenService:Create(card, TweenInfo.new(0.45, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { GroupTransparency = 0 }):Play()
+TweenService:Create(cardScale, TweenInfo.new(0.45, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = CONFIG.Scale }):Play()
+
+-- ---------- real loading flow ----------
+local t0 = os.clock()
+local function stamp() return string.format("+%.1fs", os.clock() - t0) end
+
+local function runStep(i, label, work)
+	if not gui.Parent then return false end
+	setActive(i)
+	local row = addRow(label, "task")
+	local s = os.clock()
+	-- steps 1..N-1 use CONFIG.StepTimes; the last step uses whatever time is left
+	local minTime = CONFIG.StepTimes[i] or 5
+	if i == N then
+		minTime = math.max(5, CONFIG.TotalTime - (s - t0) - 0.6)
+	end
+	work()
+	local rem = minTime - (os.clock() - s)
+	if rem > 0 then task.wait(rem) end
+	if not gui.Parent then return false end
+	row.done(stamp())
+	setDone(i)
+	return true
+end
+
+task.wait(0.5)
+local infoRow = addRow("Loader opened", "info")
+infoRow.stamp(stamp())
+
+local ok = runStep(1, "Waiting for your character to spawn", function()
+	local char = player.Character or player.CharacterAdded:Wait()
+	char:WaitForChild("HumanoidRootPart", 15)
+end)
+
+ok = ok and runStep(2, "Preloading game assets", function()
+	local assets = {}
+	for _, d in ipairs(workspace:GetDescendants()) do
+		if d:IsA("Decal") or d:IsA("Texture") or d:IsA("MeshPart") or d:IsA("Sound") then
+			table.insert(assets, d)
+		end
+	end
+	local finished = false
+	task.spawn(function()
+		pcall(function() ContentProvider:PreloadAsync(assets) end)
+		finished = true
+	end)
+	local waited = 0
+	while not finished and waited < 20 do
+		task.wait(0.1)
+		waited += 0.1
+	end
+end)
+
+ok = ok and runStep(3, "Setting up " .. CONFIG.GameName, function()
+	pcall(CONFIG.Setup)
+end)
+
+ok = ok and runStep(4, "Starting " .. CONFIG.GameName, function()
+	task.wait(0.2)
+end)
+
+if not ok or not gui.Parent then return end
+
+statusLbl.Text = "Ready, opening the menu"
+local finalRow = addRow("Ready, opening the menu", "task")
+task.wait(0.6)
+finalRow.done(stamp(), true)
+task.wait(1.2)
+
+TweenService:Create(dim, TweenInfo.new(0.4), { BackgroundTransparency = 1 }):Play()
+local out = TweenService:Create(card, TweenInfo.new(0.4), { GroupTransparency = 1 })
+out:Play()
+TweenService:Create(cardScale, TweenInfo.new(0.4), { Scale = CONFIG.Scale * 0.92 }):Play()
+out.Completed:Wait()
+gui:Destroy()
+pcall(CONFIG.OnReady)
